@@ -2,33 +2,7 @@ name: tagpr
 
 # **取り込み先の tagpr.yml から呼ぶ reusable workflow（issue #6）。** リリース PR を作り直し、
 # マージされたらタグを打って、取り込み先の publish / release を起動する。この repo では動かない
-# （`workflow_call` しか持たない）。
-#
-# 呼び方（取り込み先の `.github/workflows/tagpr.yml`）:
-#
-#   on:
-#     push:
-#       branches: [main]
-#     workflow_dispatch:
-#   permissions:
-#     contents: read
-#   jobs:
-#     tagpr:
-#       uses: kan/tagpr-scripts/.github/workflows/tagpr.yml@<commit の SHA>
-#       permissions:
-#         contents: write
-#         pull-requests: write
-#         issues: read
-#         actions: write
-#       with:
-#         release-workflow: release.yml
-#
-# - **呼ぶ行は commit の SHA で書く。** 別の repo の reusable workflow を呼ぶ行は、呼ぶ側の
-#   actions.lock では固定されない。SHA は `scripts/tagpr/` の subtree と同じ commit に揃え、
-#   subtree pull のときに一緒に上げる。この workflow の中の action（tagpr など）は、この repo の
-#   actions.lock が固定する
-# - 呼ぶジョブの `permissions` が、ここのジョブの権限の上限になる。上の 4 つを書く
-# - `github.repository` や checkout の対象は、呼んだ側の repo になる
+# （`workflow_call` しか持たない）。呼び方と入力は README の「The tagpr workflow」。
 #
 # 動き:
 #
@@ -42,21 +16,11 @@ on:
   workflow_call:
     inputs:
       release-workflow:
-        description: >-
-          タグを打った後に、そのタグを ref にして起動するワークフローのファイル名（publish.yml など）。
-          空なら起動しない（起動の前に別のジョブを挟む repo は、自分で起動する）
+        description: タグを打った後に、そのタグを ref にして起動するワークフローのファイル名。空なら起動しない
         type: string
         default: ''
       artifact:
-        description: >-
-          同じ run の前のジョブが作った artifact の名前（クレジットなど）。tagpr の前に
-          `$RUNNER_TEMP/tagpr-artifact` へ落とし、そのディレクトリを環境変数 TAGPR_ARTIFACT_DIR で
-          postVersionCommand に渡す。落とせなかったときは TAGPR_ARTIFACT_DIR を設定しない
-        type: string
-        default: ''
-      node-version:
-        description: >-
-          postVersionCommand に使う Node の版（setup-node に渡す）。空ならランナーに入っている Node を使う
+        description: 同じ run の前のジョブが作った artifact の名前。ディレクトリを TAGPR_ARTIFACT_DIR で postVersionCommand に渡す
         type: string
         default: ''
       timeout-minutes:
@@ -74,10 +38,15 @@ permissions:
 jobs:
   tagpr:
     name: Prepare the release pull request
+    # 呼ぶ側の前のジョブ（クレジットなど）が落ちても走らせる。`if` が無いと暗黙の `success()` が
+    # 呼ぶ側の `needs` の結果まで見て、マージの run でタグを打たずに skipped になる
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     # **並べず、止めない。** 並べると同じブランチを作り直し合う。止めると、タグを打った直後に
-    # 止まって publish されないタグが残る。group は呼んだ側の repo ごとに分かれる。
+    # 止まって publish されないタグが残る。group は呼んだ側の repo ごとに分かれる。呼ぶ側の
+    # workflow の concurrency と同じ名前にすると、GitHub が deadlock として run を止めるので、
+    # この workflow に固有の名前にしてある。
     #
     # それでも GitHub は待っている run を 1 つしか持たない。リリース PR のマージの run が
     # 待っている間に push が来ると、その run は cancelled になりタグが打たれない。後の push の
@@ -85,7 +54,7 @@ jobs:
     # マージコミットの run を再実行する（tagpr-scripts の README）。新しいリリース PR をマージして
     # やり過ごさない
     concurrency:
-      group: tagpr
+      group: tagpr-scripts-release-pr
       cancel-in-progress: false
     permissions:
       contents: write       # リリース PR のブランチとタグを push する
@@ -98,18 +67,15 @@ jobs:
         with:
           persist-credentials: false
 
-      # **依存のコードを走らせない。** このジョブは push できるトークンを持つ。`npm ci` などは
-      # せず、依存のコードが要るもの（クレジットなど）は、書き込みの権限を持たない前のジョブで
-      # 作って `artifact` で渡す。`scripts/tagpr/` は Node の組み込みだけで動く
-      - if: inputs.node-version != ''
-        uses: actions/setup-node@v7.1.0
+      # **依存のコードを走らせない。** このジョブは push できるトークンを持つので、`npm ci` などは
+      # しない（README の「Only Node's built-in modules」）。Node はこの repo の test.yml と同じ版に
+      # 揃え、ランナーのイメージの Node の入れ替わりに左右されないようにする
+      - uses: actions/setup-node@v7.1.0
         with:
-          node-version: ${{ inputs.node-version }}
+          node-version: 24
 
-      # 前のジョブが落ちても、tagpr は走らせる（呼ぶ側は `if: ${{ !cancelled() }}` を付ける）。
-      # リリース PR のマージの run はタグを打つだけで artifact を使わないので、一時的な失敗で
-      # タグを打ち損ねないようにする。リリース PR を作り直す run は、TAGPR_ARTIFACT_DIR が無いので
-      # postVersionCommand が何も書き換えずに落ちる（取り込み先のラッパーがそう作る）
+      # 落とせなくても tagpr は走らせる。マージの run はタグを打つだけで artifact を使わないので、
+      # 前のジョブの一時的な失敗でタグを打ち損ねないようにする
       - if: inputs.artifact != ''
         id: artifact
         continue-on-error: true
@@ -117,8 +83,6 @@ jobs:
         with:
           name: ${{ inputs.artifact }}
           path: ${{ runner.temp }}/tagpr-artifact
-      - if: steps.artifact.outcome == 'success'
-        run: echo "TAGPR_ARTIFACT_DIR=$RUNNER_TEMP/tagpr-artifact" >> "$GITHUB_ENV"
 
       # **tagpr の commit は、この repo の actions.lock が固定する。** 書き込みの権限で動く
       # 第三者の action なので、タグが付け替えられても、記録した commit 以外は動かさない
@@ -127,6 +91,7 @@ jobs:
         uses: Songmu/tagpr@v1.21.4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAGPR_ARTIFACT_DIR: ${{ steps.artifact.outcome == 'success' && format('{0}/tagpr-artifact', runner.temp) || '' }}
 
   # **GITHUB_TOKEN で push したタグでは `push: tags` が起動しない。** `workflow_dispatch` は
   # その例外なので、タグを ref にして起動する。`workflow_call` で同じ run から呼ばない。そうすると
@@ -138,7 +103,7 @@ jobs:
   release:
     name: Start the release
     needs: tagpr
-    if: needs.tagpr.outputs.tag != '' && inputs.release-workflow != ''
+    if: ${{ !cancelled() && needs.tagpr.result == 'success' && needs.tagpr.outputs.tag != '' && inputs.release-workflow != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
