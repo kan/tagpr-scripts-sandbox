@@ -1,0 +1,8 @@
+[tagpr]
+	releaseBranch = main
+	vPrefix = true
+	versionFile = -
+	changelog = false
+	release = false
+	postVersionCommand = scripts/release-prepare.sh
+	minorLabels = enhancement
