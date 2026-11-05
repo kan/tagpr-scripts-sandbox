@@ -97,7 +97,8 @@ jobs:
       # 書き換え、CHANGELOG と lock は直さないまま push する（失敗の報告は最後に出す）。
       # マージすると、CHANGELOG に節の無いタグが打たれ、publish は release-notes.mjs の検査で
       # 止まる。マージできないよう draft にし、次に成功した run で ready に戻す。リリース PR は
-      # tagpr が付けるラベル `tagpr` で探す
+      # tagpr が付けるラベル `tagpr` で探す。`gh pr list --label` は検索のインデックスを使い、
+      # 同じ run で作られたばかりの PR を返さないので、REST の一覧を絞る
       - name: Turn the release pull request into a draft
         if: failure() && steps.tagpr.outcome == 'failure'
         env:
@@ -106,7 +107,8 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          for n in $(gh pr list --label tagpr --state open --json number,isDraft -q '.[] | select(.isDraft | not) | .number'); do
+          for n in $(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" \
+              --jq '.[] | select(any(.labels[]; .name == "tagpr") and (.draft | not)) | .number'); do
             gh pr ready --undo "$n"
             gh pr comment "$n" --body "tagpr の run が落ちたので draft にしました。この PR は CHANGELOG や lock が揃っていない可能性があります。原因を直して main に push すると、作り直されて ready に戻ります。 $RUN_URL"
           done
@@ -117,7 +119,8 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          for n in $(gh pr list --label tagpr --state open --json number,isDraft -q '.[] | select(.isDraft) | .number'); do
+          for n in $(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" \
+              --jq '.[] | select(any(.labels[]; .name == "tagpr") and .draft) | .number'); do
             gh pr ready "$n"
           done
 
