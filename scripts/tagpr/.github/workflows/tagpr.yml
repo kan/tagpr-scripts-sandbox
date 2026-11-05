@@ -93,6 +93,61 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAGPR_ARTIFACT_DIR: ${{ steps.artifact.outcome == 'success' && format('{0}/tagpr-artifact', runner.temp) || '' }}
 
+      # **tagpr は、postVersionCommand が落ちてもリリース PR を作り直す。** 版のファイルだけを
+      # 書き換え、CHANGELOG と lock は直さないまま push する（失敗の報告は最後に出す）。
+      # マージすると、CHANGELOG に節の無いタグが打たれ、publish は release-notes.mjs の検査で
+      # 止まる。マージできないよう draft にし、次に成功した run で ready に戻す。リリース PR は
+      # tagpr が付けるラベル `tagpr` で探す
+      - name: Turn the release pull request into a draft
+        if: failure() && steps.tagpr.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          for n in $(gh pr list --label tagpr --state open --json number,isDraft -q '.[] | select(.isDraft | not) | .number'); do
+            gh pr ready --undo "$n"
+            gh pr comment "$n" --body "tagpr の run が落ちたので draft にしました。この PR は CHANGELOG や lock が揃っていない可能性があります。原因を直して main に push すると、作り直されて ready に戻ります。 $RUN_URL"
+          done
+      - name: Mark the release pull request ready
+        if: steps.tagpr.outcome == 'success' && steps.tagpr.outputs.tag == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for n in $(gh pr list --label tagpr --state open --json number,isDraft -q '.[] | select(.isDraft) | .number'); do
+            gh pr ready "$n"
+          done
+
+      # **タグは annotated にする。** tagpr が annotated で打つのは tag.gpgSign が true のときだけで、
+      # ふだんは lightweight になる。lightweight のタグは `git describe`（`--tags` 無し）に
+      # 無視されるので、submodule で pin する repo（booch など）で 1 つ前の版が表示される。
+      # 起動の前に、同じ commit へ API で打ち直す（書き込みのトークンを git に渡さない）。
+      # GITHUB_TOKEN で書き換えるので、ほかの workflow は動かない
+      - name: Make the tag annotated
+        if: steps.tagpr.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.tagpr.outputs.tag }}
+        run: |
+          set -euo pipefail
+          read -r type sha < <(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')
+          if [ "$type" = tag ]; then
+            echo "$TAG is already annotated"
+            exit 0
+          fi
+          if [ "$type" != commit ]; then
+            echo "::error::$TAG does not point at a commit ($type)"
+            exit 1
+          fi
+          tag_sha=$(gh api "repos/$GH_REPO/git/tags" -f tag="$TAG" -f message="Release $TAG" \
+            -f object="$sha" -f type=commit --jq .sha)
+          gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$TAG" -f sha="$tag_sha" -F force=true --silent
+          echo "$TAG: annotated ($tag_sha) on $sha"
+
   # **GITHUB_TOKEN で push したタグでは `push: tags` が起動しない。** `workflow_dispatch` は
   # その例外なので、タグを ref にして起動する。`workflow_call` で同じ run から呼ばない。そうすると
   # run の ref が main になり、OIDC のトークンも provenance も attestation もそれを名乗る
