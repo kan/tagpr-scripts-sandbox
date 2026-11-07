@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-11-07
+
 - リリース PR に tagpr:minor を付け外しすると作り直されることを確かめる（kan/tagpr-scripts#3）
 
 ## [0.1.6] - 2026-11-07
@@ -24,6 +26,7 @@
 
 - 共通の tagpr workflow を呼ぶ形で、最初のリリースを作る
 
+[0.1.7]: https://github.com/kan/tagpr-scripts-sandbox/releases/tag/v0.1.7
 [0.1.6]: https://github.com/kan/tagpr-scripts-sandbox/releases/tag/v0.1.6
 [0.1.5]: https://github.com/kan/tagpr-scripts-sandbox/releases/tag/v0.1.5
 [0.1.4]: https://github.com/kan/tagpr-scripts-sandbox/releases/tag/v0.1.4
