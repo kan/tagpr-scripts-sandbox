@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- 取り消されたマージの run を、次の run が再実行してタグを打たせることを確かめる（kan/tagpr-scripts#4）
+
 ## [0.1.7] - 2026-11-07
 
 - リリース PR に tagpr:minor を付け外しすると作り直されることを確かめる（kan/tagpr-scripts#3）

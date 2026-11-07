@@ -9,7 +9,7 @@ permissions: {}
 
 jobs:
   rebuild:
-    uses: kan/tagpr-scripts/.github/workflows/tagpr-label.yml@19aa97635f98840e03898fd4ffe74d6925cfe7bf
+    uses: kan/tagpr-scripts/.github/workflows/tagpr-label.yml@cbbe9209e6187bd31e505d4023419392de45d23a
     permissions:
       actions: write        # tagpr.yml を起動する
       pull-requests: write  # リリース PR を draft にする
