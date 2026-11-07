@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- 出すものが無い push では tagpr を飛ばし、項目を足すとリリース PR ができることを確かめる（kan/tagpr-scripts#13）
+
 ## [0.1.5] - 2026-11-07
 
 - 成功した run が、前のリリース PR を閉じ、今のリリース PR だけを ready に戻すことを確かめる（kan/tagpr-scripts#11）
