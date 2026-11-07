@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- 成功した run が、前のリリース PR を閉じ、今のリリース PR だけを ready に戻すことを確かめる（kan/tagpr-scripts#11）
+
 ## [0.1.4] - 2026-11-05
 
 - 落ちた run のリリース PR を draft にし、タグを annotated にすることを確かめる
