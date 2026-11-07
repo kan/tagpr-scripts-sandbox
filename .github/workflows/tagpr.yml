@@ -4,6 +4,11 @@ name: tagpr
 on:
   push:
     branches: [main]
+  # リリース PR に tagpr:minor / tagpr:major を付け外ししたら作り直す（kan/tagpr-scripts#3 の試し）。
+  # pull_request_target は既定のブランチの上で走るので、tagpr はリリースのブランチの上で動く。
+  # PR の中身は checkout しない
+  pull_request_target:
+    types: [labeled, unlabeled]
   workflow_dispatch:
 
 permissions:
@@ -13,6 +18,12 @@ jobs:
   # 書き込みの権限を持たないジョブで、依存のコードが要るもの（ここでは CREDITS の代わり）を作る
   credits:
     name: Generate CREDITS
+    # pull_request_target では、この repo のリリース PR の版のラベルの付け外しだけで走る
+    if: >-
+      github.event_name != 'pull_request_target' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       startsWith(github.event.pull_request.head.ref, 'tagpr-from-v') &&
+       (github.event.label.name == 'tagpr:minor' || github.event.label.name == 'tagpr:major'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -29,8 +40,14 @@ jobs:
 
   tagpr:
     needs: credits
-    # credits が落ちても、マージの run がタグを打てるようにする
-    if: ${{ !cancelled() }}
+    # credits が落ちても、マージの run がタグを打てるようにする。pull_request_target の絞り込みは
+    # credits と同じ（credits が skipped でも `!cancelled()` だけでは走ってしまう）
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request_target' ||
+       (github.event.pull_request.head.repo.full_name == github.repository &&
+        startsWith(github.event.pull_request.head.ref, 'tagpr-from-v') &&
+        (github.event.label.name == 'tagpr:minor' || github.event.label.name == 'tagpr:major')))
     uses: kan/tagpr-scripts/.github/workflows/tagpr.yml@c2b813c5ac07d8c09c4d75f70aa317dc0338eb7b
     permissions:
       contents: write

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- リリース PR に tagpr:minor を付け外しすると作り直されることを確かめる（kan/tagpr-scripts#3）
+
 ## [0.1.6] - 2026-11-07
 
 - 出すものが無い push では tagpr を飛ばし、項目を足すとリリース PR ができることを確かめる（kan/tagpr-scripts#13）
