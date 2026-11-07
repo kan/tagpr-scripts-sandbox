@@ -18,6 +18,7 @@ version in a Perl module and `META.json`, and releases from `master`.
 | `release-prepare.mjs` | tagpr, as `postVersionCommand` | Turns `## [Unreleased]` into `## [X.Y.Z] - <date in JST>`, adds the version's link definition, and brings `package-lock.json` to the version tagpr put in `package.json` (not with `--changelog-only`) |
 | `release-notes.mjs` | The publish workflow | Prints one section of `CHANGELOG.md`, to check that it exists before publishing and to use it as the GitHub release notes. Given a tag `vX.Y.Z` it prints `## [X.Y.Z]`; given a pre-release tag (`vX.Y.Z-rc.1`, tagged by hand on `main`) it prints `## [Unreleased]` |
 | `release-pending.mjs` | The tagpr workflow, before tagpr | Prints `false` when there is nothing to release (`## [Unreleased]` is empty, and no section is newer than the latest tag), so that tagpr is not run; `true` otherwise |
+| `missed-tags.mjs` | The tagpr workflow, before tagpr | Reads `CHANGELOG.md` to find the versions whose tag was missed, and the version a release pull request's merge commit released, so that the workflow can re-run the run of that merge |
 | `changelog.mjs` | (imported by the others) | How a `CHANGELOG.md` is read and stamped. Written in one place so the release pull request and the publish never disagree. Knows nothing about npm |
 | `npm-lock.mjs` | (imported by `release-prepare.mjs`) | The `package.json` / `package-lock.json` part |
 | `cargo-lock.mjs` | (imported by `release-prepare.mjs`) | The `Cargo.toml` / `Cargo.lock` part, with `--cargo <dir>` |
@@ -96,7 +97,10 @@ it fails. It fails when:
   rebuilds the release pull request from the release branch every time, so this means a release pull request
   was merged and its tag was never made — usually because the tagpr run of the merge
   commit was cancelled by a later push, or because the tag was deleted to be made again.
-  Re-run that run (or push the tag again, annotated: `git tag -a -m "Release vX.Y.Z" vX.Y.Z <commit>`).
+  The tagpr workflow re-runs a cancelled run of the merge before it runs tagpr (see "A
+  missed tag is made by re-running the run of its merge" below), so this fails only when
+  that could not be done. Then re-run the run of the merge commit (or push the tag again, annotated:
+  `git tag -a -m "Release vX.Y.Z" vX.Y.Z <commit>`).
   Merging a new release pull request would tag a
   later commit with changes the CHANGELOG does not list.
 
@@ -270,6 +274,21 @@ jobs:
   an annotated tag on the same commit before starting `release-workflow`. To get the commit
   from the tag, use `$TAG^{commit}` (or follow the tag object in the API), not `$TAG` alone.
   If that step fails, the tag stays lightweight and `release-workflow` is not started.
+- **A missed tag is made by re-running the run of its merge.** When the run of a merge is
+  cancelled (a push came while it waited), the version has a section in `CHANGELOG.md` but
+  no tag. Before tagpr, each run looks for the oldest such version (`missed-tags.mjs`) and
+  the merge commit of its release pull request between the latest tag and the run's
+  commit: merged, labelled `tagpr`, from a `tagpr-from-v` branch, with that version as the
+  newest section of its `CHANGELOG.md`. If the tagpr job of the push run on that commit
+  was cancelled, it re-runs that run's cancelled and failed jobs, the same as doing it by
+  hand: tagpr makes the tag, and the rest of the run (the annotated tag, the `tag` output,
+  `release-workflow`) goes as usual. The run that asked for it does not run tagpr: it waits
+  for the re-run to finish, and starts `tagpr.yml` again on the release branch, which picks
+  up the next missing tag or rebuilds the release pull request. The release was decided
+  when the pull request was merged, so nobody is asked again. A merge whose tagpr job
+  failed is not re-run (fix the cause first). When the merge or its run cannot be found,
+  only a warning is given and tagpr runs; if the tag is still missing, it fails as above.
+  A repository with no version tag yet is left to tagpr, which tags its first merge.
 - **When the run of a merge made the tag but failed after it, re-run that run.** This covers
   a failed step that makes the tag annotated, and a failed start of `release-workflow`.
   tagpr accepts a tag that already points at the merged commit, and outputs it again, so the
