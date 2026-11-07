@@ -49,6 +49,7 @@ jobs:
   #   マージコミットを探す。その commit の CHANGELOG のいちばん新しい版が、その版であること
   # - 再実行するのは、そのマージコミットでの push の run（呼ぶ側の workflow）で、tagpr のジョブが
   #   cancelled だったときだけ（run 全体の結果は、呼ぶ側のほかのジョブの失敗でも failure になる）。
+  #   tagpr のジョブの前に run ごと取り消されたとき（ジョブが無いか skipped で、run が cancelled）も含む。
   #   取り消されたジョブと落ちたジョブだけを再実行する（`--failed`）。tagpr のジョブが落ちていたら、
   #   原因を直してから手で再実行する（ここは理由を出して落ちる）
   # - 再実行を頼んだ（またはもう走っている）run では、tagpr を走らせない。タグがまだ無いので
@@ -126,16 +127,20 @@ jobs:
           read -r workflow path <<<"$self"
           # 取得が落ちたらステップも落とす（`read < <(...)` に直に書くと、落ちても空のまま進む）
           run=$(gh api "repos/$GH_REPO/actions/workflows/$workflow/runs?head_sha=$merge&event=push&per_page=1" \
-            --jq '.workflow_runs[0] // empty | "\(.id) \(.run_attempt) \(.status) \(.html_url)"')
-          read -r id attempt status url <<<"$run"
+            --jq '.workflow_runs[0] // empty | "\(.id) \(.run_attempt) \(.status) \(.conclusion) \(.html_url)"')
+          read -r id attempt status conclusion url <<<"$run"
           if [ -z "$id" ]; then
             echo "::warning::no push run of this workflow for the merge of $oldest ($merge), so nothing is re-run"
             exit 0
           fi
           if [ "$status" = completed ]; then
-            # tagpr のジョブ（呼ぶ側のジョブ名 / このジョブ名）の結果。最新の attempt のもの
+            # tagpr のジョブ（呼ぶ側のジョブ名 / このジョブ名）の結果。最新の attempt のもの。
+            # run がその前に取り消されると、ジョブが無いか、呼ぶ側のジョブが skipped になる
             job=$(gh api --paginate "repos/$GH_REPO/actions/runs/$id/jobs" \
               --jq '.jobs[] | select(.name | endswith("Prepare the release pull request")) | .conclusion' | head -n 1)
+            if { [ -z "$job" ] || [ "$job" = skipped ]; } && [ "$conclusion" = cancelled ]; then
+              job=cancelled
+            fi
             case "$job" in
               cancelled)
                 gh run rerun --failed "$id"
