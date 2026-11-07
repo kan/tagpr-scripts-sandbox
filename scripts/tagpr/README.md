@@ -9,7 +9,9 @@ The Go projects [roji](https://github.com/kan/roji),
 which have no version file, use only the CHANGELOG part (`--changelog-only`). The Tauri apps
 [musql](https://github.com/kan/musql) (`--changelog-only --cargo src-tauri`) and
 [pike](https://github.com/kan/pike) (`--cargo src-tauri`, with `package.json` too) also
-bring `Cargo.lock` along.
+bring `Cargo.lock` along. The CPAN module
+[coveralls-perl](https://github.com/kan/coveralls-perl) (`--changelog-only`) keeps its
+version in a Perl module and `META.json`, and releases from `master`.
 
 | File | Run by | Does |
 |---|---|---|
@@ -182,6 +184,41 @@ jobs:
   starts, including jobs that will be skipped.
 - Do not give the calling workflow a `concurrency` of its own. The tagpr job already
   queues the runs one at a time.
+- **Rebuild the release pull request when its version label changes.** Add
+  `.github/workflows/tagpr-label.yml`, calling `tagpr-label.yml` here at the same commit:
+
+  ```yaml
+  name: tagpr-label
+  on:
+    pull_request_target:
+      types: [labeled, unlabeled]
+  permissions: {}
+  jobs:
+    rebuild:
+      uses: kan/tagpr-scripts/.github/workflows/tagpr-label.yml@<commit SHA>
+      permissions:
+        actions: write        # start the tagpr workflow
+        pull-requests: write  # mark the release pull request draft
+  ```
+
+  When a label is added to or removed from the open release pull request (`tagpr:minor`,
+  `tagpr:major` or any other), it marks the pull request draft and starts `tagpr.yml`
+  with `workflow_dispatch` on the release branch, so the release pull request is rebuilt
+  at the version its labels ask for and marked ready again. Without it, a release pull
+  request merged before a rebuild releases the version it had before the label. It checks
+  nothing out, so `pull_request_target` runs no code from the pull request. It needs no
+  GitHub App: a label added by a member with write access starts the run without the
+  approval that `pull_request` asks for on a pull request made by `GITHUB_TOKEN` (labels
+  from outside collaborators may still wait for approval, depending on the repository's
+  Actions settings).
+  - It starts `.github/workflows/tagpr.yml`, so keep that name and its
+    `workflow_dispatch:` trigger. A run started by `workflow_dispatch` always runs tagpr,
+    even with nothing to release.
+  - A label changed on a merged pull request (one listed in `minorLabels`, say) does not
+    start it. Start `tagpr.yml` by hand then: `gh workflow run tagpr.yml`.
+  - The rebuild queues behind a merge run like any other run. A label changed while a
+    merge run waits can replace that run (the same as a push); rerun the merge commit's
+    run to make the tag.
 - **Keep Dependabot off the calling line.** Add this to the `github-actions` entry of
   `.github/dependabot.yml`:
 
@@ -217,7 +254,8 @@ jobs:
   in `CHANGELOG.md`), `release-pending.mjs` says so, and the run passes with a notice and
   no release pull request. A run of a merge, or one after a tag was missed, still runs
   tagpr, and so does a run while a release pull request is open and ready (it is rebuilt
-  and turned into a draft). If the check itself fails, tagpr is run, so a tag is never left
+  and turned into a draft), and a run started by `workflow_dispatch` (a rebuild asked for
+  by hand or by `tagpr-label.yml`). If the check itself fails, tagpr is run, so a tag is never left
   unmade for it.
 - **A successful run marks ready only the release pull request it rebuilt, and closes the
   others.** tagpr looks only at the branch `tagpr-from-v<latest tag>`, so once a tag is made,
@@ -316,6 +354,9 @@ the `META.json` that Minilla writes:
 	versionFile = lib/Foo/Bar.pm,META.json
 	postVersionCommand = node scripts/tagpr/release-prepare.mjs --changelog-only
 ```
+
+With Minilla, set `manage_changes = false` in `minil.toml` once `Changes` is replaced by
+`CHANGELOG.md`: `minil dist` otherwise tries to rewrite `Changes`.
 
 The release branch does not have to be `main`. Set `releaseBranch` in `.tagpr` and
 `on.push.branches` of the calling workflow to the same branch (`master`, for example).

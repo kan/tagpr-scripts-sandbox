@@ -12,7 +12,8 @@ name: tagpr
 #   （`scripts/tagpr/release-prepare.mjs`）が直す
 # - リリース PR がマージされると、次の run がマージコミットにタグを打ち、`release` ジョブが
 #   `release-workflow` をそのタグで起動する
-# - 取り込み先の `workflow_dispatch` は、リリース PR の作り直し用（`tagpr:minor` を付けた後など）
+# - 取り込み先の `workflow_dispatch` は、リリース PR の作り直し用。版のラベル（`tagpr:minor` など）の
+#   付け外しでは、`tagpr-label.yml` がこれで起動し直す（#3）
 on:
   workflow_call:
     inputs:
@@ -95,19 +96,25 @@ jobs:
           pending=$(node scripts/tagpr/release-pending.mjs <<<"$refs" 2>"$reason") || { cat "$reason" >&2; exit 1; }
           cat "$reason"
           case "$pending" in
-            true) ;;
-            false)
-              ready=$(gh api --paginate "repos/$GH_REPO/pulls?state=open&per_page=100" \
-                --jq '.[] | select(any(.labels[]; .name == "tagpr") and (.head.ref | startswith("tagpr-from-v")) and (.draft | not)) | .number')
-              if [ -n "$ready" ]; then
-                echo "release pull request #${ready//$'\n'/, #} is ready, so tagpr is run to rebuild it"
-                pending=true
-              else
-                echo "::notice::$(cat "$reason"). tagpr is not run"
-              fi
-              ;;
+            true | false) ;;
             *) echo "::error::release-pending.mjs printed \"$pending\", not true or false"; exit 1 ;;
           esac
+          # 手や tagpr-label.yml からの起動は作り直しの依頼なので、必ず走らせる（tagpr-label.yml は
+          # 起動の前にリリース PR を draft にするので、下の ready の PR の判定では拾えない）
+          if [ "$pending" = false ] && [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            echo "started by workflow_dispatch, so tagpr is run to rebuild the release pull request"
+            pending=true
+          fi
+          if [ "$pending" = false ]; then
+            ready=$(gh api --paginate "repos/$GH_REPO/pulls?state=open&per_page=100" \
+              --jq '.[] | select(any(.labels[]; .name == "tagpr") and (.head.ref | startswith("tagpr-from-v")) and (.draft | not)) | .number')
+            if [ -n "$ready" ]; then
+              echo "release pull request #${ready//$'\n'/, #} is ready, so tagpr is run to rebuild it"
+              pending=true
+            else
+              echo "::notice::$(cat "$reason"). tagpr is not run"
+            fi
+          fi
           echo "pending=$pending" >>"$GITHUB_OUTPUT"
 
       # 落とせなくても tagpr は走らせる。マージの run はタグを打つだけで artifact を使わないので、
