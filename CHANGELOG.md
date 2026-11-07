@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- 出すものが無い run が draft のリリース PR を閉じ、次の項目で新しいリリース PR ができることを確かめる（kan/tagpr-scripts#14）
+
 ## [0.1.8] - 2026-11-07
 
 - 取り消されたマージの run を、次の run が再実行してタグを打たせることを確かめる（kan/tagpr-scripts#4）
