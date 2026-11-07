@@ -1,0 +1,15 @@
+name: tagpr-label
+
+# リリース PR のラベルを付け外ししたら、tagpr.yml で作り直す（kan/tagpr-scripts#3）
+on:
+  pull_request_target:
+    types: [labeled, unlabeled]
+
+permissions: {}
+
+jobs:
+  rebuild:
+    uses: kan/tagpr-scripts/.github/workflows/tagpr-label.yml@e6ffc038b4541918cff4f18e52729d18757307d3
+    permissions:
+      actions: write        # tagpr.yml を起動する
+      pull-requests: write  # リリース PR を draft にする
