@@ -6,7 +6,8 @@ name: tagpr
 #
 # 動き:
 #
-# - main への push ごとに、リリース PR（ブランチ `tagpr-from-v<前の版>`）を main の上に作り直す。
+# - リリースのブランチ（`.tagpr` の `releaseBranch`。main や master）への push ごとに、リリース PR
+#   （ブランチ `tagpr-from-v<前の版>`）をそのブランチの上に作り直す。
 #   版のファイルは tagpr が書き換え、CHANGELOG と lock は `.tagpr` の postVersionCommand
 #   （`scripts/tagpr/release-prepare.mjs`）が直す
 # - リリース PR がマージされると、次の run がマージコミットにタグを打ち、`release` ジョブが
@@ -74,9 +75,44 @@ jobs:
         with:
           node-version: 24
 
+      # **出すものが無ければ、tagpr を走らせず成功で終える（issue #13）。** 判定と理由は
+      # `scripts/tagpr/release-pending.mjs`。checkout は浅くタグを持たないので、タグは API で取る。
+      # **このステップが落ちても tagpr は走らせる**（API の一時的な失敗など）。止めると、マージの run で
+      # タグが打たれない。飛ばすのは、はっきり `false` と出たときだけ。
+      # ready のリリース PR が開いていれば飛ばさない（`## [Unreleased]` の項目を消す revert の後など）。
+      # tagpr に作り直させ、落ちた run として draft にする
+      - name: Check for something to release
+        id: pending
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # 取得が落ちたらステップも落とす（パイプに直に書くと、落ちても空の一覧で進む）
+          refs=$(gh api --paginate "repos/$GH_REPO/git/matching-refs/tags/" --jq '.[].ref')
+          reason="$RUNNER_TEMP/release-pending.txt"
+          pending=$(node scripts/tagpr/release-pending.mjs <<<"$refs" 2>"$reason") || { cat "$reason" >&2; exit 1; }
+          cat "$reason"
+          case "$pending" in
+            true) ;;
+            false)
+              ready=$(gh api --paginate "repos/$GH_REPO/pulls?state=open&per_page=100" \
+                --jq '.[] | select(any(.labels[]; .name == "tagpr") and (.head.ref | startswith("tagpr-from-v")) and (.draft | not)) | .number')
+              if [ -n "$ready" ]; then
+                echo "release pull request #${ready//$'\n'/, #} is ready, so tagpr is run to rebuild it"
+                pending=true
+              else
+                echo "::notice::$(cat "$reason"). tagpr is not run"
+              fi
+              ;;
+            *) echo "::error::release-pending.mjs printed \"$pending\", not true or false"; exit 1 ;;
+          esac
+          echo "pending=$pending" >>"$GITHUB_OUTPUT"
+
       # 落とせなくても tagpr は走らせる。マージの run はタグを打つだけで artifact を使わないので、
       # 前のジョブの一時的な失敗でタグを打ち損ねないようにする
-      - if: inputs.artifact != ''
+      - if: inputs.artifact != '' && steps.pending.outputs.pending != 'false'
         id: artifact
         continue-on-error: true
         uses: actions/download-artifact@v8.0.2
@@ -88,6 +124,7 @@ jobs:
       # 第三者の action なので、タグが付け替えられても、記録した commit 以外は動かさない
       - name: Run tagpr
         id: tagpr
+        if: steps.pending.outputs.pending != 'false'
         uses: Songmu/tagpr@v1.22.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -108,7 +145,8 @@ jobs:
       # 取り違えうるので、成功した run がコメントを付けて閉じる（ブランチは消さない）。閉じるのは
       # ラベル `tagpr` があり、ブランチが `tagpr-from-v` で始まる PR だけ（手でラベルを付けた
       # ふつうの PR は閉じない）。今の PR を先に ready に戻し、閉じるのが落ちても警告で済ませる。
-      # 出力が空の成功（tagpr v1.21.4 では起きない）は、警告を出して何もしない。
+      # 出力が空の成功（tagpr v1.22.0 では、PR を作り直す経路の成功は必ず出力を書くので起きない）は、
+      # 警告を出して何もしない。
       #
       # リリースを止めておきたいときは、draft にせず、マージしないでおく（成功した run は
       # ready の今の PR には触らない）
@@ -137,7 +175,7 @@ jobs:
             while read -r -u 3 n is_draft; do
               [ -n "$n" ] && [ "$is_draft" = false ] || continue
               gh pr ready --undo "$n" </dev/null
-              gh pr comment "$n" </dev/null --body "tagpr の run が落ちたので draft にしました。この PR は CHANGELOG や lock が揃っていない可能性があります。原因を直して main に push すると、作り直されて ready に戻ります（新しいリリース PR ができたときは、この PR を閉じます）。 $RUN_URL"
+              gh pr comment "$n" </dev/null --body "tagpr の run が落ちたので draft にしました。この PR は CHANGELOG や lock が揃っていない可能性があります。原因を直してリリースのブランチに push すると、作り直されて ready に戻ります（新しいリリース PR ができたときは、この PR を閉じます）。 $RUN_URL"
             done 3<<<"$prs"
             exit 0
           fi
@@ -157,15 +195,10 @@ jobs:
       # 起動の前に、同じ commit へ API で打ち直す（書き込みのトークンを git に渡さない）。
       # GITHUB_TOKEN で書き換えるので、ほかの workflow は動かない。
       #
-      # このステップが落ちると、タグは lightweight のまま残り、`release` も起動しない。run を
-      # 再実行しても、tagpr はタグを打ち直さず、このステップも動かない。手で打ち直す。タグは tagpr が
-      # ランナーで打って push するので、手元の clone には無いことが多く、古い同名のタグがあれば
-      # 別の commit に打ち直してしまう。
-      # 先に取ってくる（`git cat-file -t vX.Y.Z` が `commit` なら lightweight）:
-      # `git fetch --force origin tag vX.Y.Z`
-      # `git tag -a -f -m "Release vX.Y.Z" vX.Y.Z 'vX.Y.Z^{commit}' && git push -f origin vX.Y.Z`
-      # 手で push したタグは `push: tags` を起動する。`release-workflow` がそれを持つなら、その push で
-      # 起動するので `gh workflow run` を重ねない（同じタグで 2 回走る）。持たないなら手で起動する
+      # このステップが落ちると、タグは lightweight のまま残り、`release` も起動しない。**その run を
+      # 再実行する。** tagpr（v1.22.0 から）は、マージの commit を指すタグが既にあれば受け入れて
+      # `tag` を出し直すので、このステップと `release` がもう一度動く。再実行できないときの手順は
+      # README の「When the run of a merge made the tag but failed after it」
       - name: Make the tag annotated
         if: steps.tagpr.outputs.tag != ''
         env:
@@ -192,11 +225,11 @@ jobs:
 
   # **GITHUB_TOKEN で push したタグでは `push: tags` が起動しない。** `workflow_dispatch` は
   # その例外なので、タグを ref にして起動する。`workflow_call` で同じ run から呼ばない。そうすると
-  # run の ref が main になり、OIDC のトークンも provenance も attestation もそれを名乗る
+  # run の ref がリリースのブランチになり、OIDC のトークンも provenance も attestation もそれを名乗る
   # （npm の Trusted Publisher は publish のワークフローのファイルで判定する）。
   #
-  # 起動だけが失敗したとき（タグは打たれている）は、tagpr の run を再実行せず、
-  # `gh workflow run <release-workflow> --ref vX.Y.Z` で手で起動する
+  # 起動だけが失敗したときも、その run を再実行する（上のステップと同じ README の節）。
+  # **`release-workflow` が既に動いた run は再実行しない**（同じタグでもう一度起動する）
   release:
     name: Start the release
     needs: tagpr

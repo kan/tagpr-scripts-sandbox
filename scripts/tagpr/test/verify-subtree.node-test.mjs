@@ -48,6 +48,13 @@ function writeFiles(dir, files) {
   }
 }
 
+/** upstream の commit A の中身を dir に置く。upstream と取り込み先の `scripts/tagpr/` の両方に使う */
+function placeTreeA(dir) {
+  mkdirSync(dir, { recursive: true });
+  for (const name of FILES) copyFileSync(join(root, name), join(dir, name));
+  writeFileSync(join(dir, 'README.md'), 'A\n');
+}
+
 // upstream の 2 つの commit。A を取り込んだ状態を基本にし、B は README だけが違う
 let upstream;
 let shaA;
@@ -55,10 +62,10 @@ let shaB;
 before(() => {
   upstream = tempDir();
   git(upstream, 'init', '-q', '-b', 'main');
-  // 枝の先でない commit も SHA で取れるようにする（GitHub は許している）
+  // 枝の先でない commit も SHA で取れるようにし、--filter も受け付ける（GitHub はどちらも許している）
   git(upstream, 'config', 'uploadpack.allowReachableSHA1InWant', 'true');
-  for (const name of FILES) copyFileSync(join(root, name), join(upstream, name));
-  writeFiles(upstream, { 'README.md': 'A\n' });
+  git(upstream, 'config', 'uploadpack.allowFilter', 'true');
+  placeTreeA(upstream);
   git(upstream, 'add', '.');
   git(upstream, 'commit', '-q', '-m', 'A');
   shaA = git(upstream, 'rev-parse', 'HEAD');
@@ -73,11 +80,8 @@ const caller = (sha) => `jobs:\n  tagpr:\n    uses: kan/tagpr-scripts/.github/wo
 function makeCaller(files) {
   const dir = tempDir();
   git(dir, 'init', '-q', '-b', 'main');
-  for (const name of FILES) {
-    mkdirSync(join(dir, 'scripts/tagpr'), { recursive: true });
-    copyFileSync(join(root, name), join(dir, 'scripts/tagpr', name));
-  }
-  writeFiles(dir, { 'scripts/tagpr/README.md': 'A\n', ...files });
+  placeTreeA(join(dir, 'scripts/tagpr'));
+  writeFiles(dir, files);
   git(dir, 'add', '.');
   git(dir, 'commit', '-q', '-m', 'caller');
   return dir;
@@ -127,6 +131,30 @@ test('fails when the shared workflow is called by a tag or a short SHA', () => {
     assert.equal(r.status, 1);
     assert.match(r.stderr, /pin kan\/tagpr-scripts to a full commit SHA/);
   }
+});
+
+test('ignores workflows outside the top level of .github/workflows', () => {
+  const r = verify(
+    makeCaller({ '.github/workflows/tagpr.yml': caller(shaA), '.github/workflows/old/tagpr.yml': caller(shaB) }),
+  );
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('reads quoted lines, step-level lines and CRLF files, and skips commented-out lines', () => {
+  const workflow = [
+    'jobs:',
+    '  tagpr:',
+    `    uses: "kan/tagpr-scripts/.github/workflows/tagpr.yml@${shaA}" # pinned`,
+    '  other:',
+    '    steps:',
+    `      - uses: 'kan/tagpr-scripts/.github/workflows/tagpr.yml@${shaA}'`,
+    `    # uses: kan/tagpr-scripts/.github/workflows/tagpr.yml@${shaB}`,
+    `      - run: echo "uses: kan/tagpr-scripts/.github/workflows/tagpr.yml@v1"`,
+    '',
+  ].join('\r\n');
+  const r = verify(makeCaller({ '.github/workflows/tagpr.yml': workflow }));
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, new RegExp(`matches kan/tagpr-scripts@${shaA} `));
 });
 
 test('fails when two workflows call different commits', () => {
