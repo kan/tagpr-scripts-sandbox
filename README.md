@@ -15,7 +15,8 @@ bring `Cargo.lock` along.
 |---|---|---|
 | `release-prepare.mjs` | tagpr, as `postVersionCommand` | Turns `## [Unreleased]` into `## [X.Y.Z] - <date in JST>`, adds the version's link definition, and brings `package-lock.json` to the version tagpr put in `package.json` (not with `--changelog-only`) |
 | `release-notes.mjs` | The publish workflow | Prints one section of `CHANGELOG.md`, to check that it exists before publishing and to use it as the GitHub release notes. Given a tag `vX.Y.Z` it prints `## [X.Y.Z]`; given a pre-release tag (`vX.Y.Z-rc.1`, tagged by hand on `main`) it prints `## [Unreleased]` |
-| `changelog.mjs` | (imported by both) | How a `CHANGELOG.md` is read and stamped. Written in one place so the release pull request and the publish never disagree. Knows nothing about npm |
+| `release-pending.mjs` | The tagpr workflow, before tagpr | Prints `false` when there is nothing to release (`## [Unreleased]` is empty, and no section is newer than the latest tag), so that tagpr is not run; `true` otherwise |
+| `changelog.mjs` | (imported by the others) | How a `CHANGELOG.md` is read and stamped. Written in one place so the release pull request and the publish never disagree. Knows nothing about npm |
 | `npm-lock.mjs` | (imported by `release-prepare.mjs`) | The `package.json` / `package-lock.json` part |
 | `cargo-lock.mjs` | (imported by `release-prepare.mjs`) | The `Cargo.toml` / `Cargo.lock` part, with `--cargo <dir>` |
 | `version-files.mjs` | (imported by `release-prepare.mjs`) | Checks that every `versionFile` in `.tagpr` is at the proposed version |
@@ -32,7 +33,9 @@ and `package-lock.json` (lockfile version 2 or later), are read from the working
 `release-prepare.mjs` reads `versionFile` from `.tagpr` (with `git config`) and checks that
 each file listed is at the proposed version: the top-level `"version"` of a `*.json`, the
 `[package]` `version` of a `Cargo.toml`, the whole of a `VERSION` (the version alone, on
-one line, with or without a final LF). tagpr rewrites only the first occurrence of the
+one line, with or without a final LF), the `our $VERSION = "X.Y.Z";` line of a Perl module
+`*.pm` (exactly one line that sets `$VERSION`, to a quoted string; POD and anything after
+`__END__` or `__DATA__` are skipped). tagpr rewrites only the first occurrence of the
 current version in each file, so a dependency at the same version above the file's own
 version line would take the change and leave the real one behind, with nothing failing;
 the tag is then made from the first file's version. Other kinds of files cannot be checked
@@ -84,12 +87,11 @@ of the package's own `[[package]]` entry in `Cargo.lock` (the one without a `sou
 `release-prepare.mjs` checks everything before it writes anything, and writes nothing when
 it fails. It fails when:
 
-- `## [Unreleased]` is missing, empty or duplicated. Right after a release this is
-  expected, and every push to `main` gets a red tagpr run until a pull request adds an
-  entry.
+- `## [Unreleased]` is missing, empty or duplicated. (Right after a release, the tagpr
+  workflow does not run tagpr at all: see "With nothing to release" below.)
 - **A version section newer than the latest tag is already there** (the latest tag is
   `TAGPR_CURRENT_VERSION`, which tagpr passes along with `TAGPR_NEXT_VERSION`). tagpr
-  rebuilds the release branch from `main` every time, so this means a release pull request
+  rebuilds the release pull request from the release branch every time, so this means a release pull request
   was merged and its tag was never made — usually because the tagpr run of the merge
   commit was cancelled by a later push, or because the tag was deleted to be made again.
   Re-run that run (or push the tag again, annotated: `git tag -a -m "Release vX.Y.Z" vX.Y.Z <commit>`).
@@ -107,7 +109,9 @@ it fails. It fails when:
   first: tag them in that order. With no tags at all (tagpr passes `v0.0.0`) the check is
   skipped, so a repository that released without tags can adopt tagpr.
 - A file in `versionFile` is not at the version tagpr proposes, or is not a `*.json`, a
-  `Cargo.toml` or a `VERSION`.
+  `Cargo.toml`, a `VERSION` or a `*.pm`. A `*.pm` also fails when it sets `$VERSION` on no
+  line or on more than one, or in any other form (`$VERSION = eval $VERSION;`,
+  `package NAME VERSION;`), since then which line is the module's own version is unclear.
 - `package.json` is not at the version tagpr proposes (not checked with `--changelog-only`).
 - With `--cargo <dir>`, the `[package]` version in `<dir>/Cargo.toml` is not the proposed
   one, or `<dir>/Cargo.lock` does not have exactly one entry for the package without a
@@ -161,6 +165,18 @@ jobs:
 - **Call it by a full commit SHA, the same commit as `scripts/tagpr/`.** A reusable
   workflow from another repository is not pinned by the caller's `actions.lock`. The
   actions inside it (tagpr included) are pinned by this repository's `actions.lock`.
+- **Check that in the CI of pull requests**, from the root of the repository:
+
+  ```yaml
+  - name: Check scripts/tagpr/ against the tagpr workflow pin
+    run: node scripts/tagpr/verify-subtree.mjs
+  ```
+
+  It compares the tree of `HEAD:scripts/tagpr` with the tree of the commit that the
+  `uses: kan/tagpr-scripts/...@<SHA>` lines call, and fails when a subtree pull did not move
+  the line, when the line moved without a pull, or when `scripts/tagpr/` was edited by hand.
+  It fetches that one commit into a temporary repository, so a shallow checkout is enough
+  and no token is needed.
 - The calling job's `permissions` are the most the workflow gets. List all four, even
   with an empty `release-workflow`: GitHub checks every job's permissions when the run
   starts, including jobs that will be skipped.
@@ -190,40 +206,58 @@ jobs:
     fails, `TAGPR_ARTIFACT_DIR` is empty, and the wrapper should fail before it writes.
   - `timeout-minutes`: for the tagpr job (default 10).
 - `postVersionCommand` runs on Node 24, the version the tests here run on.
-- Output: `tag`, the tag this run made, or empty.
+- Output: `tag`, the tag this run made (or found already made, on a re-run), or empty.
 - **When a tagpr run fails, the release pull request is turned into a draft.** tagpr
   rebuilds the release pull request even when `postVersionCommand` fails: the version files
   are bumped, but `CHANGELOG.md` and the locks are not. Merged, it would make a tag with no
   CHANGELOG section, which the publish then refuses. The draft cannot be merged; the next
-  run that succeeds marks it ready again. Right after a release this happens on every push
-  until a pull request adds an entry under `## [Unreleased]`.
+  run that succeeds marks it ready again.
+- **With nothing to release, tagpr is not run.** When `## [Unreleased]` is empty and no
+  section is newer than the latest tag (a push right after a release that changes nothing
+  in `CHANGELOG.md`), `release-pending.mjs` says so, and the run passes with a notice and
+  no release pull request. A run of a merge, or one after a tag was missed, still runs
+  tagpr, and so does a run while a release pull request is open and ready (it is rebuilt
+  and turned into a draft). If the check itself fails, tagpr is run, so a tag is never left
+  unmade for it.
 - **A successful run marks ready only the release pull request it rebuilt, and closes the
   others.** tagpr looks only at the branch `tagpr-from-v<latest tag>`, so once a tag is made,
   an older release pull request (say, the draft left behind when the run of a merge was
   cancelled) is never rebuilt again. The run closes it with a comment and keeps its branch.
   Do not reopen and merge it. Only a run that rebuilt the release pull request does this:
   a run that makes a tag, or one that fails, leaves the old one open until the next
-  successful run on a push to `main`. Only pull requests with the label `tagpr` and a branch
-  starting `tagpr-from-v` are closed.
+  successful run on a push to the release branch. Only pull requests with the label `tagpr`
+  and a branch starting `tagpr-from-v` are closed.
 - **The tag is made annotated.** tagpr makes a lightweight tag unless `tag.gpgSign` is set,
   and `git describe` without `--tags` skips lightweight tags. The workflow replaces it with
   an annotated tag on the same commit before starting `release-workflow`. To get the commit
   from the tag, use `$TAG^{commit}` (or follow the tag object in the API), not `$TAG` alone.
-  If that step fails, the tag stays lightweight and `release-workflow` is not started, and
-  re-running the run does not help (tagpr does not make the tag again). Make it again by
-  hand. The tag is made in the workflow, so a local clone often lacks it, or holds an old tag
-  of the same name on another commit; fetch it first (`git cat-file -t vX.Y.Z` prints
-  `commit` for a lightweight tag):
+  If that step fails, the tag stays lightweight and `release-workflow` is not started.
+- **When the run of a merge made the tag but failed after it, re-run that run.** This covers
+  a failed step that makes the tag annotated, and a failed start of `release-workflow`.
+  tagpr accepts a tag that already points at the merged commit, and outputs it again, so the
+  rest of the run goes through once more. It fails if the tag points at another commit.
+  **Do not re-run a run whose `release-workflow` already went out**: it would start it again
+  on the same tag.
+
+  When the run can no longer be re-run (GitHub allows it for 30 days), do it by hand. The
+  tag is made on the runner, so a local clone often lacks it, or holds an old tag of the same
+  name on another commit; fetch it first, and look at what it is:
 
   ```bash
   git fetch --force origin tag vX.Y.Z
+  git cat-file -t vX.Y.Z   # "tag": annotated, "commit": lightweight
+  ```
+
+  If it is annotated, only the start failed: `gh workflow run <release-workflow> --ref vX.Y.Z`.
+  If it is lightweight, make it annotated and push it:
+
+  ```bash
   git tag -a -f -m "Release vX.Y.Z" vX.Y.Z 'vX.Y.Z^{commit}' && git push -f origin vX.Y.Z
   ```
 
-  A tag pushed by hand starts `push: tags`; when `release-workflow` has that trigger, the
-  push starts it, so do not also run `gh workflow run` (it would run twice on the tag).
-- **If only starting `release-workflow` fails** (the tag is made), do not re-run the tagpr
-  run. Start it by hand: `gh workflow run <release-workflow> --ref vX.Y.Z`.
+  A tag pushed by hand starts `push: tags`. When `release-workflow` has that trigger, the
+  push starts it, so do not also run `gh workflow run` (it would run twice on the tag);
+  otherwise, start it with `gh workflow run` as above.
 
 `.tagpr` for an npm package:
 
@@ -274,6 +308,17 @@ that file:
 	versionFile = VERSION
 	postVersionCommand = node scripts/tagpr/release-prepare.mjs --changelog-only
 ```
+
+For a Perl module, list the module and every other file that holds the version, such as
+the `META.json` that Minilla writes:
+
+```ini
+	versionFile = lib/Foo/Bar.pm,META.json
+	postVersionCommand = node scripts/tagpr/release-prepare.mjs --changelog-only
+```
+
+The release branch does not have to be `main`. Set `releaseBranch` in `.tagpr` and
+`on.push.branches` of the calling workflow to the same branch (`master`, for example).
 
 ## Changing it
 

@@ -16,8 +16,9 @@
  * 呼ぶ行も `scripts/tagpr/` も、commit した内容（`HEAD`）から読む。作業ツリーの変更は見ない。
  * subtree の置き場所は、このファイルの置き場所から決める。
  *
- * 呼ぶ行の commit は、一時の bare repo へ深さ 1 で取ってくる。取り込み先の clone を浅くせず、
- * squash のコミットを探すために履歴を深く取る必要も無い。公開の repo なのでトークンも要らない。
+ * 呼ぶ行の commit は、一時の bare repo へ深さ 1 で、commit のオブジェクトだけを取ってくる
+ * （tree の hash は commit に書いてある）。取り込み先の clone を浅くせず、squash のコミットを
+ * 探すために履歴を深く取る必要も無い。公開の repo なのでトークンも要らない。
  *
  * **Node の組み込みしか使わない**（ほかのスクリプトと同じ）。
  */
@@ -30,36 +31,53 @@ import { ReleaseError } from './changelog.mjs';
 const workflowsDir = '.github/workflows';
 // テストが手元の repo に差し替える。CI では設定しない
 const upstreamUrl = process.env.TAGPR_SCRIPTS_URL || 'https://github.com/kan/tagpr-scripts.git';
-const usesPattern = /uses:\s*["']?kan\/tagpr-scripts\/\.github\/workflows\/tagpr\.yml@([^\s"'#]+)/g;
+// git grep（POSIX の ERE）で行を拾い、JS で ref を取り出す。2 つは同じ形を表す。
+// 行頭から `uses:` までに空白と `- ` しか許さないので、コメントや run: の文字列の中の行は拾わない
+const usesGrep = `^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*["']?kan/tagpr-scripts/\\.github/workflows/tagpr\\.yml@[^[:space:]"'#]+`;
+const usesRef = /tagpr\.yml@([^\s"'#]+)$/;
 
-function git(args) {
+/** git を走らせる。`okStatus` に無い終了コードなら落とす（git grep は一致が無いと 1 を返す） */
+function git(args, okStatus = [0]) {
   const result = spawnSync('git', args, { encoding: 'utf8' });
   if (result.error) throw result.error;
-  if (result.status !== 0) {
+  if (!okStatus.includes(result.status)) {
     throw new ReleaseError(`git ${args.join(' ')} failed:\n${result.stderr.trim()}`);
   }
   return result.stdout.trim();
 }
 
-/** HEAD の `.github/workflows/*.yml` から、共通の workflow を呼ぶ行の SHA を集める（ファイルごと） */
-function pinnedShas() {
-  const paths = git(['ls-tree', '--name-only', `HEAD:${workflowsDir}`])
+/**
+ * HEAD の `.github/workflows/*.yml` から、共通の workflow を呼ぶ行を集める（`{ path, ref }`）。
+ * ref は形を確かめる前の値で、タグや短い SHA も入る。GitHub と同じく直下のファイルだけを見る
+ */
+function findPins() {
+  const out = git(
+    [
+      'grep', '-I', '-o', '-z', '--no-color', '-E', usesGrep,
+      'HEAD', '--', `:(glob)${workflowsDir}/*.yml`, `:(glob)${workflowsDir}/*.yaml`,
+    ],
+    [0, 1],
+  );
+  // 1 行は `HEAD:<path>\0<一致した部分>`（-z なので path は引用されず、区切りも NUL）
+  return out
     .split('\n')
-    .filter((name) => /\.ya?ml$/.test(name))
-    .map((name) => `${workflowsDir}/${name}`);
-  const pins = [];
-  for (const path of paths) {
-    for (const m of git(['show', `HEAD:${path}`]).matchAll(usesPattern)) pins.push({ path, ref: m[1] });
-  }
-  return pins;
+    .filter(Boolean)
+    .map((line) => {
+      const [name, match = ''] = line.split('\0');
+      const ref = match.match(usesRef)?.[1];
+      if (!name.startsWith('HEAD:') || ref === undefined) {
+        throw new ReleaseError(`cannot read the output of git grep: ${JSON.stringify(line)}`);
+      }
+      return { path: name.slice('HEAD:'.length), ref };
+    });
 }
 
-/** tagpr-scripts の commit の tree を、一時の bare repo に取ってきて読む */
+/** tagpr-scripts の commit の tree を、一時の bare repo に取ってきて読む（commit のオブジェクトだけを取る） */
 function upstreamTree(sha) {
   const dir = mkdtempSync(join(tmpdir(), 'tagpr-scripts-'));
   try {
     git(['init', '-q', '--bare', dir]);
-    git(['-C', dir, 'fetch', '-q', '--depth=1', upstreamUrl, sha]);
+    git(['-C', dir, 'fetch', '-q', '--depth=1', '--filter=tree:0', upstreamUrl, sha]);
     return git(['-C', dir, 'rev-parse', `${sha}^{tree}`]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -75,7 +93,7 @@ try {
     );
   }
 
-  const pins = pinnedShas();
+  const pins = findPins();
   if (pins.length === 0) {
     throw new ReleaseError(`no "uses: kan/tagpr-scripts/.github/workflows/tagpr.yml@<SHA>" in ${workflowsDir}`);
   }
