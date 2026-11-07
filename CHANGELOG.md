@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-07
+
 - 取り消されたマージの run を、次の run が再実行してタグを打たせることを確かめる（kan/tagpr-scripts#4）
 
 ## [0.1.7] - 2026-11-07
@@ -28,6 +30,7 @@
 
 - 共通の tagpr workflow を呼ぶ形で、最初のリリースを作る
 
+[0.1.8]: https://github.com/kan/tagpr-scripts-sandbox/releases/tag/v0.1.8
 [0.1.7]: https://github.com/kan/tagpr-scripts-sandbox/releases/tag/v0.1.7
 [0.1.6]: https://github.com/kan/tagpr-scripts-sandbox/releases/tag/v0.1.6
 [0.1.5]: https://github.com/kan/tagpr-scripts-sandbox/releases/tag/v0.1.5
