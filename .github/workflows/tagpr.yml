@@ -31,7 +31,7 @@ jobs:
     needs: credits
     # credits が落ちても、マージの run がタグを打てるようにする
     if: ${{ !cancelled() }}
-    uses: kan/tagpr-scripts/.github/workflows/tagpr.yml@e6ffc038b4541918cff4f18e52729d18757307d3
+    uses: kan/tagpr-scripts/.github/workflows/tagpr.yml@19aa97635f98840e03898fd4ffe74d6925cfe7bf
     permissions:
       contents: write
       pull-requests: write
