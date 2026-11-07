@@ -20,8 +20,9 @@ hokora が使っている）。Tauri の pike / musql は `--cargo src-tauri` �
 | `changelog.mjs` | ほかのスクリプトがすべて import する | CHANGELOG の読み方（節の見出し、コードフェンス、末尾のリンク定義）と書き換え方（`stampRelease`）、日付・repo 名の決め方。import しても何も実行しない。npm に依存しない |
 | `npm-lock.mjs` | `release-prepare.mjs` が import する | `package.json` の版の確認と、`package-lock.json` の版を揃えた中身を作る。書くのは呼んだ側 |
 | `cargo-lock.mjs` | `release-prepare.mjs` が import する（`--cargo <dir>`） | `<dir>/Cargo.toml` の `[package]` の版の確認と、`<dir>/Cargo.lock` の自分の `[[package]]` の版を揃えた中身を作る。`cargo` は呼ばない。書くのは呼んだ側 |
-| `version-files.mjs` | `release-prepare.mjs` が import する | `.tagpr` の `versionFile` を `git config` で読み、並んだ全部のファイルの本来の版（`*.json` は最上位の `"version"`、`Cargo.toml` は `[package]`）が提案の版かを確かめる。tagpr は各ファイルで今の版の最初の 1 か所しか書き換えず、別の行に当たっても何も落ちないため |
+| `version-files.mjs` | `release-prepare.mjs` が import する | `.tagpr` の `versionFile` を `git config` で読み、並んだ全部のファイルの本来の版（`*.json` は最上位の `"version"`、`Cargo.toml` は `[package]`、`VERSION` は中身の全体）が提案の版かを確かめる。tagpr は各ファイルで今の版の最初の 1 か所しか書き換えず、別の行に当たっても何も落ちないため |
 | `test/release.node-test.mjs` | `node --test` | 上の 6 つのテスト |
+| `.github/workflows/tagpr.yml` | 取り込み先の tagpr.yml が `uses:` で呼ぶ（reusable workflow。この repo では動かない） | tagpr を走らせ、タグを打ったら annotated に打ち直し、取り込み先の publish / release をそのタグで `workflow_dispatch` する。tagpr が落ちた run ではリリース PR を draft にし、成功した run ではその run のリリース PR だけを ready に戻して、前のリリース PR を閉じる。入力は README の「The tagpr workflow」 |
 
 package.json は無い。依存も無い。
 
@@ -48,8 +49,9 @@ package.json は無い。依存も無い。
   `release-notes.mjs` に別々に書くと、リリース PR は通るのに publish の検査で落ちる。
   コードフェンスの追い方も `scan` の 1 か所だけ
 - **`release-prepare.mjs` は検査をすべて済ませてから書く。落ちるときは何も書き換えない。**
-  tagpr は失敗してもリリース PR を更新するので、版だけ上がった PR を残さないため。
-  検査を足すときは「書き換え」の区切りより前に置く
+  tagpr は postVersionCommand が落ちてもリリース PR を作り直すので、書きかけの CHANGELOG や
+  lock を PR へ入れないため。検査は「書き換え」の区切りより前に足す。版のファイルは tagpr が先に書き換えるので、落ちた run の PR は版だけ
+  上がったものになる。それは共通の workflow（`.github/workflows/tagpr.yml`）が draft にする
 - **スクリプトは repo のルートを作業ディレクトリにして実行される。** `CHANGELOG.md` / `.tagpr`
   とその `versionFile` /
   `package.json` / `package-lock.json` と、`--cargo <dir>` の `<dir>/Cargo.toml` /
@@ -64,7 +66,9 @@ package.json は無い。依存も無い。
   `origin` の URL から決める**（`currentGithubRepo`）。`package.json` の `repository` は読まない。
   GitHub 以外は落とす。エラーに remote の URL を出すときは認証情報を伏せる
 - 改行は LF だけを受ける。CR があれば落とす
-- 取り込み先の Node は 24（CI も 24 で回している）。それより新しい機能を使わない
+- 取り込み先の Node は 24（CI も 24 で回している）。それより新しい機能を使わない。
+  **版を上げるときは、`test.yml` と `.github/workflows/tagpr.yml` の `setup-node` を同じコミットで
+  上げる。** Dependabot も lockfile も Node の版は追わないので、片方だけ上げてもどこも落ちない
 
 ## テスト
 
@@ -86,6 +90,11 @@ node --test 'test/*.node-test.mjs'
 - `.github/workflows/test.yml`: main への push と PR でテストを回す。依存が無いので
   `npm ci` は無い。権限は `contents: read`
 - `.github/dependabot.yml`: 見るのは GitHub Actions だけ（月 1 回）
+- `.github/workflows/tagpr.yml`: 取り込み先から呼ぶ reusable workflow。`workflow_call` しか
+  持たないので、この repo では動かない。**この中の action（tagpr など）は、この repo の
+  `actions.lock` が固定する。** tagpr の版を上げるのは、ここと lockfile の 1 か所で済む。
+  中身を変えるときは、別の repo から呼んで確かめる。使う repo は kan/tagpr-scripts-sandbox
+  （tagpr は main の上でしか動かないので、PR のブランチでは試せない）
 - `.github/workflows/verify-lockfile.yml`: `actions.lock` が `uses:` と食い違っていないか、
   固定した commit を上流で検証できるかを、PR と main への push で確かめる
 - **action の固定は `.github/workflows/actions.lock`（`gh actions-lock` が作る）に任せる。**
@@ -116,6 +125,16 @@ git subtree pull -S --prefix=scripts/tagpr https://github.com/kan/tagpr-scripts.
 
 - **`-S` を付ける。** subtree は `commit-tree` でコミットを作るので、`commit.gpgsign` が
   効かず未署名になる
+- **同じ PR で、tagpr.yml が共通の workflow を呼ぶ行の SHA を、取り込んだこの repo の commit に
+  上げる。** squash のコミットのメッセージにある `git-subtree-split` の SHA。取り込み先の squash や
+  マージのコミットの SHA は、この repo に無いので使えない。
+  呼ぶ行は `uses: kan/tagpr-scripts/.github/workflows/tagpr.yml@<SHA>`。手順は README の「Changing it」。
+  subtree と揃えておけば、`scripts/tagpr/.github/workflows/tagpr.yml` の写しが、動いているものと同じになる
+- **取り込み先の dependabot.yml の `github-actions` には、`kan/tagpr-scripts*` の ignore を入れる**
+  （README の「The tagpr workflow」）。SHA だけを上げる PR が来ると、subtree が置いていかれ、どこも
+  落ちない。Dependabot は SHA で固定した参照を、参照先の最新タグの commit へ上げる。この repo には
+  タグが無いので今は来ないが、タグを打てば来るようになる（dependabot-core の `latest_commit_sha` を
+  2026-11 に読んだ）
 - **その PR はマージコミットで入れる。** squash で入れる repo でも同じ。subtree は前回の
   取り込みを自分が作ったコミットから探すので、squash すると次の pull が壊れる
 - 取り込む PR は取り込み先の CHANGELOG に書かない（利用者に届かない）
@@ -146,6 +165,15 @@ issue #1）。`--changelog-only` が npm でない repo の入り口。
 issue を読まずに着手しない。進める順はユーザーと決める。
 
 - #5: tagpr を v1.22.0 に上げる。上げると、取り込み先の復旧の手順が変わる（#5 のコメント）
-- #6: tagpr とリリースのワークフローを共通化し、権限を絞る
+- #10: 取り込み先の呼ぶ行の SHA と subtree の commit が揃っているかを、CI で確かめる
+- #11: 共通の workflow が、古いリリース PR まで ready に戻す。共通の workflow は直した（成功した run は前のリリース PR を閉じる）。
+  残りは取り込み先の手順書で、次の subtree pull の PR で直す
+  - lily と notify-slack の「作り直して戻す」の誤り
+  - wema-kake と notify-slack で、手で打ち直す前の `git fetch --force origin tag vX.Y.Z` が抜けている
+  - 全 repo の「古い PR は手で閉じる」の記述
 - #4: 打たれなかったタグを、次の run で打ち直す
 - #3: リリース PR のラベルを付け外ししたら、自動で作り直す
+- #8: booch と booch-win のリリースを tagpr に移す（版の正本が `VERSION`、タグは annotated）。
+  `versionFile` で `VERSION` を確かめる処理は入った。残りは booch / booch-win の側の移行
+- #12: `versionFile` で Perl モジュール（`*.pm`）の `$VERSION` を確かめる。coveralls-perl
+  （CPAN、ブランチは `master`）を取り込み先に加えるため（kan/coveralls-perl#50）
