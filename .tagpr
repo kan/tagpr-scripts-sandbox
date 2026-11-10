@@ -1,7 +1,7 @@
 [tagpr]
 	releaseBranch = main
 	vPrefix = true
-	versionFile = -
+	versionFile = package.json
 	changelog = false
 	release = false
 	postVersionCommand = scripts/release-prepare.sh

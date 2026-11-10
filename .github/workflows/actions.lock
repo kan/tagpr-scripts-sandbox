@@ -3,8 +3,8 @@
 # Docs: https://gh.io/actions-lockfile
 version: 'v0.0.3'
 workflows:
-    '.github/workflows/release.yml':
-        - 'actions/checkout@v7.0.1'
+    '.github/workflows/publish.yml': []
+    '.github/workflows/tagpr-label.yml': []
     '.github/workflows/tagpr.yml':
         - 'actions/upload-artifact@v7.0.2'
     '.github/workflows/verify-lockfile.yml':

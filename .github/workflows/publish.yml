@@ -1,0 +1,32 @@
+name: Publish
+
+# kan/tagpr-scripts の共通の npm の publish の workflow を呼ぶ（kan/tagpr-scripts#15 の試し）。
+# 共通の tagpr workflow が、打ったタグを ref にして起動する。`push: tags` は手で打ち直したとき用。
+#
+# **このファイルの名前を変えない。** npmjs.com の @kanf/sandbox の Trusted Publisher に、この名前で
+# 登録する。照合されるのが呼ぶ側のこのファイルの名前かを確かめるのが、この試しの目的
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+# 1 つのタグに 1 run。止めない（publish の途中で止めると、npm には出たのに Release が無い版が残る）
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  publish:
+    # SHA は scripts/tagpr/ に取り込んだ commit と同じにする
+    uses: kan/tagpr-scripts/.github/workflows/publish-npm.yml@74b762be6f7b68b706ca7a66675e9fd748e2b995
+    permissions:
+      contents: write  # checkout と GitHub Release
+      id-token: write  # npm の Trusted Publishing
+    with:
+      check: npm test
+      # 入力の経路も試す。tgz に index.js が入っているか、Release に index.js を添付できるか
+      check-tarball: tar -tzf "$TARBALL" | grep -qx package/index.js
+      release-files: index.js
+      access: public

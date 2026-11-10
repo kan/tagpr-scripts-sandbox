@@ -1,0 +1,18 @@
+{
+  "name": "@kanf/sandbox",
+  "version": "0.1.8",
+  "description": "Test package for the npm publish workflow of kan/tagpr-scripts. Not for use.",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kan/tagpr-scripts-sandbox.git"
+  },
+  "type": "module",
+  "exports": "./index.js",
+  "files": [
+    "index.js"
+  ],
+  "scripts": {
+    "test": "node --test index.test.js"
+  }
+}

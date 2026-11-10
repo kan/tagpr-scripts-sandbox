@@ -8,5 +8,6 @@ if [ ! -f "${TAGPR_ARTIFACT_DIR:-}/CREDITS" ]; then
     exit 1
 fi
 
-node scripts/tagpr/release-prepare.mjs --changelog-only
+# npm パッケージなので、package-lock.json の版も揃える（--changelog-only を付けない）
+node scripts/tagpr/release-prepare.mjs
 cp "$TAGPR_ARTIFACT_DIR/CREDITS" CREDITS

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - 出すものが無い run が draft のリリース PR を閉じ、次の項目で新しいリリース PR ができることを確かめる（kan/tagpr-scripts#14）
+- @kanf/sandbox として、共通の npm の publish の workflow で npm へ出す（kan/tagpr-scripts#15）
 
 ## [0.1.8] - 2026-11-07
 
