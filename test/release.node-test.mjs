@@ -619,6 +619,94 @@ test('notes: fails on a missing or empty section', () => {
   assert.match(run(notes, dir, ['Unreleased']).stderr, /is empty/);
 });
 
+// --- release-tag.mjs ---
+
+const TAGPR_MAIN = '[tagpr]\n\treleaseBranch = main\n';
+
+/** 一時 repo で git を走らせる。署名の設定は外の設定に左右されないよう切る */
+function gitIn(dir, ...args) {
+  const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args], {
+    cwd: dir,
+    env: gitEnv(),
+    encoding: 'utf8',
+  });
+  assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
+}
+
+/**
+ * タグの commit を checkout した repo。`origin/main` は、`onMain` ならその commit を、そうでなければ
+ * その 1 つ前の commit を指す（タグの commit が main の先にある = main の上に無い）
+ */
+function makeTagRepo({ version = '1.2.4', tagpr = TAGPR_MAIN, onMain = true, name = '@o/x' } = {}) {
+  const files = { 'package.json': `${JSON.stringify({ name, version }, null, 2)}\n` };
+  if (tagpr !== null) files['.tagpr'] = tagpr;
+  const dir = makeRepo({ lock: false, files });
+  gitIn(dir, 'init', '-q');
+  gitIn(dir, 'add', '-A');
+  gitIn(dir, 'commit', '-q', '-m', 'base');
+  if (!onMain) {
+    gitIn(dir, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+    gitIn(dir, 'commit', '-q', '--allow-empty', '-m', 'off main');
+  } else {
+    gitIn(dir, 'commit', '-q', '--allow-empty', '-m', 'later');
+    gitIn(dir, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+    gitIn(dir, 'checkout', '-q', 'HEAD~1');
+  }
+  return dir;
+}
+
+const tagScript = join(import.meta.dirname, '..', 'release-tag.mjs');
+
+test('tag: prints the outputs for a tag on the release branch', () => {
+  const r = run(tagScript, makeTagRepo(), ['v1.2.4']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'prerelease=false\nspec=@o/x@1.2.4\n');
+});
+
+test('tag: a pre-release tag is a prerelease', () => {
+  const r = run(tagScript, makeTagRepo({ version: '1.3.0-rc.1' }), ['v1.3.0-rc.1']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'prerelease=true\nspec=@o/x@1.3.0-rc.1\n');
+});
+
+test('tag: fails when the tag is not the version of package.json', () => {
+  const r = run(tagScript, makeTagRepo(), ['v1.2.5']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /The tag v1\.2\.5 does not match version 1\.2\.4 of package\.json/);
+  assert.equal(r.stdout, '');
+});
+
+test('tag: fails when the commit is not on the release branch', () => {
+  const r = run(tagScript, makeTagRepo({ onMain: false }), ['v1.2.4']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /The commit of v1\.2\.4 is not on main/);
+  assert.equal(r.stdout, '');
+});
+
+test('tag: fails without releaseBranch or without the history of the branch', () => {
+  const none = run(tagScript, makeTagRepo({ tagpr: null }), ['v1.2.4']);
+  assert.equal(none.status, 1);
+  assert.match(none.stderr, /\.tagpr has no tagpr\.releaseBranch/);
+  assert.equal(none.stdout, '');
+  const r = run(tagScript, makeTagRepo({ tagpr: '[tagpr]\n\treleaseBranch = master\n' }), ['v1.2.4']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /Cannot see whether v1\.2\.4 is on master/);
+});
+
+test('tag: fails with a message on a package.json that is not JSON', () => {
+  const dir = makeTagRepo();
+  writeFileSync(join(dir, 'package.json'), '{ "version": "1.2.4", }\n');
+  const r = run(tagScript, dir, ['v1.2.4']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^package\.json is not valid JSON: /);
+});
+
+test('tag: needs a tag', () => {
+  const r = run(tagScript, makeTagRepo(), []);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /usage: .*release-tag\.mjs <tag>/);
+});
+
 // --- changelog.mjs ---
 
 test('findSection: a link-shaped line inside an entry does not end the section', () => {
