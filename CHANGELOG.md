@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-11-12
+
 - 共通の npm の publish の workflow が `npm stage publish` で stage し、approve で公開されることを確かめる（kan/tagpr-scripts#15）
 
 ## [0.1.9] - 2026-11-10
@@ -37,6 +39,7 @@
 
 - 共通の tagpr workflow を呼ぶ形で、最初のリリースを作る
 
+[0.1.10]: https://github.com/kan/tagpr-scripts-sandbox/releases/tag/v0.1.10
 [0.1.9]: https://github.com/kan/tagpr-scripts-sandbox/releases/tag/v0.1.9
 [0.1.8]: https://github.com/kan/tagpr-scripts-sandbox/releases/tag/v0.1.8
 [0.1.7]: https://github.com/kan/tagpr-scripts-sandbox/releases/tag/v0.1.7
