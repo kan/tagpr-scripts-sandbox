@@ -20,7 +20,7 @@ permissions: {}
 jobs:
   publish:
     # SHA は scripts/tagpr/ に取り込んだ commit と同じにする
-    uses: kan/tagpr-scripts/.github/workflows/publish-npm.yml@74b762be6f7b68b706ca7a66675e9fd748e2b995
+    uses: kan/tagpr-scripts/.github/workflows/publish-npm.yml@bab0c0874266ab8e62a2cc9a5d1c8a692ea40ce9
     permissions:
       contents: write  # checkout と GitHub Release
       id-token: write  # npm の Trusted Publishing
