@@ -637,10 +637,11 @@ function gitIn(dir, ...args) {
  * タグの commit を checkout した repo。`origin/main` は、`onMain` ならその commit を、そうでなければ
  * その 1 つ前の commit を指す（タグの commit が main の先にある = main の上に無い）
  */
-function makeTagRepo({ version = '1.2.4', tagpr = TAGPR_MAIN, onMain = true, name = '@o/x' } = {}) {
-  const files = { 'package.json': `${JSON.stringify({ name, version }, null, 2)}\n` };
+function makeTagRepo({ version = '1.2.4', tagpr = TAGPR_MAIN, onMain = true, name = '@o/x', pkg = true, files: extra = {} } = {}) {
+  const files = { ...extra };
   if (tagpr !== null) files['.tagpr'] = tagpr;
-  const dir = makeRepo({ lock: false, files });
+  if (pkg) files['package.json'] = `${JSON.stringify({ name, version }, null, 2)}\n`;
+  const dir = makeRepo({ lock: false, pkg: false, files });
   gitIn(dir, 'init', '-q');
   gitIn(dir, 'add', '-A');
   gitIn(dir, 'commit', '-q', '-m', 'base');
@@ -691,6 +692,46 @@ test('tag: fails without releaseBranch or without the history of the branch', ()
   const r = run(tagScript, makeTagRepo({ tagpr: '[tagpr]\n\treleaseBranch = master\n' }), ['v1.2.4']);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /Cannot see whether v1\.2\.4 is on master/);
+});
+
+// CPAN のモジュールの形（coveralls-perl など）。package.json は無く、版は .pm と META.json にある
+const TAGPR_CPAN = '[tagpr]\n\treleaseBranch = main\n\tversionFile = lib/Foo.pm,META.json\n';
+const makeCpanTagRepo = (pm, meta) =>
+  makeTagRepo({
+    tagpr: TAGPR_CPAN,
+    pkg: false,
+    files: {
+      'lib/Foo.pm': `package Foo;\nour $VERSION = "${pm}";\n1;\n`,
+      'META.json': `${JSON.stringify({ name: 'Foo', version: meta }, null, 2)}\n`,
+    },
+  });
+
+test('tag: checks every versionFile without a package.json, and prints no spec', () => {
+  const r = run(tagScript, makeCpanTagRepo('1.2.4', '1.2.4'), ['v1.2.4']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'prerelease=false\n');
+});
+
+test('tag: fails when a versionFile is not the version of the tag', () => {
+  const r = run(tagScript, makeCpanTagRepo('1.2.4', '1.2.3'), ['v1.2.4']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^The tag v1\.2\.4 does not match version 1\.2\.3 of META\.json \(versionFile of \.tagpr\)/);
+  assert.equal(r.stdout, '');
+});
+
+test('tag: takes a version with build metadata', () => {
+  const r = run(tagScript, makeTagRepo({ version: '1.2.4+build.1' }), ['v1.2.4+build.1']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'prerelease=false\nspec=@o/x@1.2.4+build.1\n');
+});
+
+test('tag: fails on a tag that is not a version', () => {
+  const dir = makeTagRepo();
+  for (const tag of ['1.2.4', 'v1.2', 'sdk/v1.2.4']) {
+    const r = run(tagScript, dir, [tag]);
+    assert.equal(r.status, 1, tag);
+    assert.match(r.stderr, /is not a version tag/, tag);
+  }
 });
 
 test('tag: fails with a message on a package.json that is not JSON', () => {

@@ -1,8 +1,13 @@
 name: publish-npm
 
 # **取り込み先の publish のワークフローから呼ぶ reusable workflow（issue #15）。** バージョンのタグを
-# npm へ出し、GitHub Release を作る。この repo では動かない（`workflow_call` しか持たない）。
+# npm へ stage し、GitHub Release を作る。この repo では動かない（`workflow_call` しか持たない）。
 # 呼び方と入力は README の「The npm publish workflow」。
+#
+# **npm へは `npm publish` ではなく `npm stage publish` で出す。** stage した版は公開されず、
+# メンテナが 2FA 付きで `npm stage approve <stage ID>` したときに公開される（npm の推奨。
+# `npm help stage` の Best Practices）。取り込み先の Trusted Publisher は stage publish だけを許し、
+# direct publish（`npm publish`）は許さない。workflow が乗っ取られても、承認なしには公開されない
 #
 # 呼ぶ側は、tagpr.yml の `release-workflow` に指定された取り込み先の workflow（`publish.yml` など）。
 # tagpr.yml がタグを ref にして `workflow_dispatch` で起動する（GITHUB_TOKEN で push したタグでは
@@ -19,7 +24,7 @@ name: publish-npm
 # | ジョブ | 権限 | すること |
 # |---|---|---|
 # | `build` | `contents: read` | 検査、テスト、`npm pack`。リリースノート（`notes`）、tgz（`package`）、添付するファイル（`release-files`）を artifact に置く |
-# | `publish` | `id-token: write` | `package` を `npm publish` するだけ。checkout も `npm ci` もしない |
+# | `publish` | `id-token: write` | `package` を `npm stage publish` するだけ。checkout も `npm ci` もしない |
 # | `release` | `contents: write` | `notes` と `release-files` で GitHub Release を作るか書き直すだけ。npm に触らない |
 #
 # `id-token: write` のジョブで依存のコードが走ると、そのコードが npm 向けの OIDC トークンを取り、
@@ -48,7 +53,7 @@ on:
         type: boolean
         default: false
       access:
-        description: '`npm publish --access` に渡す値（scoped の公開パッケージなら public）。空なら付けない'
+        description: '`npm stage publish --access` に渡す値（scoped の公開パッケージなら public）。空なら付けない'
         type: string
         default: ''
       release-files:
@@ -100,7 +105,14 @@ jobs:
         id: tag
         env:
           TAG: ${{ github.ref_name }}
-        run: node scripts/tagpr/release-tag.mjs "$TAG" >>"$GITHUB_OUTPUT"
+        # release-tag.mjs は package.json が無くても通る（CPAN の repo のため）ので、ここで確かめる
+        run: |
+          set -euo pipefail
+          if [ ! -f package.json ]; then
+            echo "::error::There is no package.json at the root of the repository"
+            exit 1
+          fi
+          node scripts/tagpr/release-tag.mjs "$TAG" >>"$GITHUB_OUTPUT"
 
       # **Release の本文は CHANGELOG のその版の節。** 節が無ければ、npm へ出す前に止める（出した後に
       # 止まると、npm にはあるのに Release が無い版ができる）。リリース PR を通っていれば節はあるので、
@@ -195,16 +207,16 @@ jobs:
           overwrite: true
 
   publish:
-    name: Publish to npm
+    name: Stage on npm
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       # **Trusted Publishing（OIDC）。** token を secret に置かない代わりに、npm の側で「この repo の
       # この workflow（呼ぶ側のファイル名）からの publish を許す」と登録しておく。provenance も
-      # 自動で付く。呼ぶ側のジョブにも `id-token: write` が要る。
-      # npm の Trusted Publisher は direct publish を許可しておくこと。「npm stage publish」だけの
-      # ままだと、`npm publish` が `403 OIDC permission denied` で落ちる
+      # 自動で付く（stage publish でも同じ）。呼ぶ側のジョブにも `id-token: write` が要る。
+      # npm の Trusted Publisher は「npm stage publish」だけを許可し、direct publish は許可しない。
+      # stage publish を許可し忘れると `403 OIDC permission denied` で落ちる
       id-token: write
     steps:
       # checkout しない。ここで走るのは Node と npm と、build が作った tgz だけ。
@@ -222,13 +234,14 @@ jobs:
           check-latest: true
           registry-url: https://registry.npmjs.org
 
-      # **Trusted Publishing は npm 11.5.1 以降にしか無い。** Node 24 に同梱の npm で足りるので、
-      # `npm install -g npm@latest` はしない（固定していない版の npm をこのジョブで取ってこない）
+      # **`npm stage` は npm 11.15.0 以降にしか無い**（Trusted Publishing は 11.5.1 から）。Node 24 に
+      # 同梱の npm で足りる（2026-11 の 24.22.3 は 11.19.1）ので、`npm install -g npm@latest` はしない
+      # （固定していない版の npm をこのジョブで取ってこない）
       - name: Check the version of npm
         run: |
           npm_version="$(npm --version)"
-          if [ "$(printf '%s\n' 11.5.1 "$npm_version" | sort -V | head -n1)" != 11.5.1 ]; then
-            echo "::error::npm $npm_version has no Trusted Publishing (11.5.1 or later is needed)"
+          if [ "$(printf '%s\n' 11.15.0 "$npm_version" | sort -V | head -n1)" != 11.15.0 ]; then
+            echo "::error::npm $npm_version has no npm stage (11.15.0 or later is needed)"
             exit 1
           fi
 
@@ -237,11 +250,18 @@ jobs:
           name: package
           path: ${{ runner.temp }}/package
 
-      # すでに npm にある版は出さない（「Re-run all jobs」でやり直すとき、publish を飛ばして release
-      # まで進める）。無い版は `npm view` が E404 で落ちる（npm 11 で確かめた）。ほかの失敗（registry の
-      # 一時的なエラーなど）では、出したかどうかが分からないので落とす。tgz の名前と、名前と版（spec）は build が出す（tgz を作ったのも build なので、
-      # 信頼の範囲は変わらない）。プレリリースは dist-tag `next` で出す（`latest` にしない）
-      - name: Publish to npm
+      # すでに npm で公開されている版は stage しない（approve した後に「Re-run all jobs」でやり直すとき、
+      # stage を飛ばして release まで進める）。無い版は `npm view` が E404 で落ちる（npm 11 で確かめた）。
+      # ほかの失敗（registry の一時的なエラーなど）では、出したかどうかが分からないので落とす。
+      # tgz の名前と、名前と版（spec）は build が出す（tgz を作ったのも build なので、信頼の範囲は
+      # 変わらない）。プレリリースは dist-tag `next` で stage する（`latest` にしない。dist-tag は
+      # stage したときに決まり、approve で変えられない）。
+      #
+      # **stage しただけで approve していない版は、`npm view` では E404 になる。** その版をもう一度
+      # stage すると registry に断られて落ちる（stage した版も公開した版と同じ版の一意性に入る）。
+      # OIDC の短命なトークンは `npm stage list` を呼べないので、ここでは見分けない。
+      # やり直すときは「Re-run all jobs」ではなく、`gh run rerun <run ID> --failed` で落ちたジョブだけを走らせる
+      - name: Stage on npm
         env:
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
           SPEC: ${{ needs.build.outputs.spec }}
@@ -250,7 +270,7 @@ jobs:
         run: |
           set -euo pipefail
           if out=$(npm view "$SPEC" version 2>&1); then
-            echo "::notice::$SPEC is already on npm, so it is not published again"
+            echo "::notice::$SPEC is already on npm, so it is not staged again"
             exit 0
           fi
           if ! grep -q 'E404' <<<"$out"; then
@@ -265,7 +285,31 @@ jobs:
           if [ -n "$ACCESS" ]; then
             args+=(--access "$ACCESS")
           fi
-          npm publish "$TARBALL" "${args[@]}"
+          # 出力は標準出力に `+ name@version (staged with id <stage ID>)`（npm 11 の
+          # lib/commands/publish.js。ID は UUID）。stage ID を拾えなくても stage は済んでいるので
+          # 落とさず、`npm stage list` で探す手順だけを出す。失敗したときも出力がログに残るよう tee で受ける
+          out_file="$RUNNER_TEMP/stage-publish.out"
+          if ! npm stage publish "$TARBALL" "${args[@]}" | tee "$out_file"; then
+            echo "::error::npm stage publish $SPEC failed. If it is already staged (a run of the same tag staged it), approve it with npm stage approve instead of staging it again, or re-run only the failed jobs"
+            exit 1
+          fi
+          stage_id=$(sed -n 's/.*(staged with id \([0-9a-fA-F-]*\)).*/\1/p' "$out_file" | head -n1)
+          {
+            echo "## $SPEC is staged on npm"
+            echo
+            echo "It is not public until it is approved, with 2FA:"
+            echo
+            echo '```sh'
+            if [ -n "$stage_id" ]; then
+              echo "npm stage view $stage_id"
+              echo "npm stage approve $stage_id"
+            else
+              echo "npm stage list ${SPEC%@*}"
+              echo "npm stage approve <stage ID>"
+            fi
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+          echo "::notice::$SPEC is staged on npm. Approve it with npm stage approve to publish it"
 
   release:
     name: Create the GitHub release
@@ -285,7 +329,9 @@ jobs:
           name: release-files
           path: ${{ runner.temp }}/release-files
 
-      # **npm publish の後に置く**（`needs`）。逆にすると、publish に失敗した版の Release が残る。
+      # **npm stage publish の後に置く**（`needs`）。逆にすると、stage に失敗した版の Release が残る。
+      # approve を待たずに作る（npm で公開される前に Release が見える）。stage を reject したら、
+      # Release は手で消す。
       # ジョブが分かれているので、ここだけ落ちたら `gh run rerun <run ID> --failed` でこのジョブ
       # だけをやり直せる。checkout しないので、repo は `GH_REPO` で渡す。
       #
