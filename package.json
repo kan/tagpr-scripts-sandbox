@@ -1,6 +1,6 @@
 {
   "name": "@kanf/sandbox",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Test package for the npm publish workflow of kan/tagpr-scripts. Not for use.",
   "license": "ISC",
   "repository": {
